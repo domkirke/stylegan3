@@ -16,6 +16,7 @@ import json
 import torch
 import dnnlib
 from .video import VideoDataset
+from torchvision.transforms import functional as F
 
 try:
     import pyspng
@@ -242,32 +243,40 @@ class VideoFolderDataset(Dataset):
     def __init__(self,
         path,                   # Path to directory or zip.
         resolution      = None, # Ensure specific resolution, None = highest available.
+        reshape_mode = "vertical",
         **super_kwargs,         # Additional arguments for the Dataset base class.
     ):
         self._path = path
         self._zipfile = None
+        self._resolution = resolution 
+        assert reshape_mode in ['vertical', 'horizontal']
+        self._reshape_mode = reshape_mode
 
         if os.path.isdir(self._path):
             self._type = 'dir'
             self._dataset = VideoDataset(self._path)
-            self._dataset.drop_sequences(1)
-            #self._dataset.flatten_data()
+            # self._dataset.drop_sequences(1)
+            self._dataset.flatten_data()
             self._all_fnames = set([self._dataset.root_directory+"/"+f for f in self._dataset.files])
         elif self._file_ext(self._path) == '.zip':
             raise NotImplementedError
         else:
             raise IOError('Path must point to a directory or zip')
 
-        self._image_fnames = list(self._all_fnames)
+        self._image_fnames = self._dataset.files
         name = os.path.splitext(os.path.basename(self._path))[0]
         raw_shape = [len(self._dataset)] + list(self._dataset[0][0].shape)
-        if resolution is not None and (raw_shape[2] != resolution or raw_shape[3] != resolution):
-            raise IOError('Image files do not match the specified resolution')
+        # if resolution is not None and (raw_shape[2] != resolution or raw_shape[3] != resolution):
+        #     raise IOError('Image files do not match the specified resolution')
         super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
 
     @staticmethod
     def _file_ext(fname):
         return os.path.splitext(fname)[1].lower()
+
+    @property
+    def image_shape(self):
+        return [3, self._resolution, self._resolution]
 
     def _get_zipfile(self):
         assert self._type == 'zip'
@@ -293,7 +302,6 @@ class VideoFolderDataset(Dataset):
         return dict(super().__getstate__(), _zipfile=None)
 
     def _load_raw_image(self, raw_idx):
-        fname = self._image_fnames[raw_idx]
         """
         with self._open_file(fname) as f:
             if pyspng is not None and self._file_ext(fname) == '.png':
@@ -304,9 +312,15 @@ class VideoFolderDataset(Dataset):
             image = image[:, :, np.newaxis] # HW => HWC
         image = image.transpose(2, 0, 1) # HWC => CHW
         """
-        image = self._dataset[raw_idx][0].numpy() 
+        image = self._dataset[raw_idx][0]
+        if self._resolution is not None:
+            if self._reshape_mode == "vertical":
+                if image.size(-1) != self._resolution:
+                    factor = self._resolution / image.size(-1)
+                    target_resize_shape = (int(image.size(-2) * factor), int(self._resolution))
+                    image = F.center_crop(F.resize(image, target_resize_shape), (self._resolution, self._resolution))
         #image = (self._dataset[raw_idx][0].numpy() - 127.5 ) / 127.5
-        return image
+        return image.numpy().astype(np.uint8)
 
     def __deepcopy__(self):
         return tuple()

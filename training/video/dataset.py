@@ -1,6 +1,8 @@
 import numpy as np, torch, torchvision as tv, os, dill, re, random, pdb, tqdm, lardon
 from torch.utils.data import Dataset
+from math import ceil
 from .transforms import VideoTransform
+from torchvision import transforms as it
 
 def check_file(file, types):
     return os.path.splitext(file)[1] in types and os.path.basename(file[0]) != "."
@@ -26,28 +28,58 @@ def checkdir(directory):
     if not os.path.isdir(directory):
         os.makedirs(directory)
 
+def check_file(file, types):
+    return os.path.splitext(file)[1] in types and os.path.basename(file[0]) != "."
+
+def checkdtype(dtype):
+    if isinstance(dtype, str):
+        dtype = getattr(torch, dtype)
+        assert isinstance(dtype, torch.dtype), "dtype %s invalid"%dtype
+        return dtype
+    elif isinstance(dtype, torch.dtype):
+        return dtype
+    else:
+        raise TypeError("%s cannot be parsed as a dtype"%dtype)
+
 class VideoDataset(Dataset):
     types = [".mp4", ".mov"]
-    def __init__(self, root_directory=None, transforms=None, augmentations=[], flatten=None, refresh=False, **kwargs):
-        assert root_directory is not None, "root_directory must be given"
+    def __init__(self, 
+                root_directory,
+                transforms=[],
+                flatten=False,
+                refresh=False,
+                dtype = torch.float32,
+                **kwargs):
         self.root_directory = root_directory
-        self.transforms = transforms or VideoTransform()
-        self.augmentations = augmentations
+        if isinstance(transforms, list):
+            self.transforms = it.Compose(transforms)
+        else:
+            self.transforms = transforms 
+        # self.augmentations = augmentations
         self.data = None
         self.files = []
         self.metadata = {}
         self.hash = {}
+        self._shape = None
+        self._flattened = False
         if os.path.isfile(f"{self.root_directory}/timestamps.ct") and not refresh:
             self.load_timestamps(f"{self.root_directory}/timestamps.ct")
         else:
             self.read_timestamps()
         if flatten:
             self.flatten_data()
+            self._flattened = True
         self._sequence_mode = None
         self._sequence_length = None
+        self._dtype = checkdtype(dtype)
 
     def __len__(self):
         return len(self.files)
+
+    @property
+    def shape(self):
+        if len(self.files) > 0:
+            return self[0][0].shape[-3:]
 
     def __getitem__(self, item, **kwargs):
         #if isinstance(item, slice):
@@ -56,6 +88,9 @@ class VideoDataset(Dataset):
         metadata = self._get_metadata(item, seq=seq, **kwargs)
         if self.transforms is not None:
             data = self.transforms(data)
+        if "timestamps" in metadata:
+            metadata['timestamps'] = float(metadata['timestamps'])
+        data = data.to(self._dtype)
         return data, metadata
 
     def _get_item(self, item, **kwargs):
@@ -72,13 +107,17 @@ class VideoDataset(Dataset):
             start = timestamps[start_idx]
             end = timestamps[end_idx]
         else:
-            start_idx = 0; end_idx = len(timestamps)
             if hasattr(timestamps, "__iter__"):
-                start = timestamps[0]; end = timestamps[-1]
+                start = timestamps[0]
+                end = timestamps[-1]
+                start_idx = 0
+                end_idx = len(timestamps)
             else:
                 start = timestamps
                 end = timestamps
-        data, _, _ = tv.io.read_video(f"{self.root_directory}/data/{self.files[item]}", start, end)
+                start_idx = 0
+                end_idx = 0
+        data, _, _ = tv.io.read_video(f"{self.root_directory}/data/{self.files[item]}", start, end, pts_unit="sec", output_format="TCHW")
         if start == end:
             if data.shape[0] != 1:
                 data = data[0][np.newaxis]
@@ -87,10 +126,9 @@ class VideoDataset(Dataset):
                 data = data[:sequence_length]
             elif data.shape[0] > sequence_length:
                 data = data
-        data = data.permute(0, 3, 1, 2)
         if data.shape[0] == 1:
             data = data[0]
-        return data, (start_idx, end_idx)
+        return data, (float(start_idx), float(end_idx))
 
     def _get_metadata(self, item, seq=None):
         metadata = {}
@@ -114,11 +152,13 @@ class VideoDataset(Dataset):
             valid_files = list(filter(lambda x: check_file(x, self.types), f))
             valid_files = [re.sub(f"{self.root_directory}/data/", "", f"{r}/{f}") for f in valid_files]
             files.extend(valid_files)
+        if len(files) == 0:
+            raise FileNotFoundError(f"no valid files found at {self.root_directory}")
         timestamps = {k: None for k in files}
-        fps = {k: None for k in valid_files}
-        for video_path in files:
+        fps = {k: None for k in files}
+        for video_path in tqdm.tqdm(files, desc="parsing video files...", total=len(files)):
             video_path_full = f"{self.root_directory}/data/{video_path}"
-            tst, fps_tmp = tv.io.read_video_timestamps(video_path_full)
+            tst, fps_tmp = tv.io.read_video_timestamps(video_path_full, pts_unit="sec")
             timestamps[video_path] = tst
             fps[video_path] = fps_tmp
         metadata_video = {'timestamps': timestamps, 'fps': fps}
@@ -157,7 +197,7 @@ class VideoDataset(Dataset):
             current_path = f"{path}/data/{self.files[i]}"
             checkdir(os.path.dirname(current_path))
             tv.io.write_video(current_path, new_data, fps = self.metadata['fps'][i])
-            new_timestamps[self.files[i]] = tv.io.read_video_timestamps(current_path)[0]
+            new_timestamps[self.files[i]] = tv.io.read_video_timestamps(current_path, pts_unit="sec")[0]
         self.metadata['timestamps'] = [new_timestamps[self.files[i]] for i in range(len(self))]
         with open(f"{path}/transforms.ct", 'wb') as f:
             dill.dump(self.transforms, f)
@@ -226,7 +266,7 @@ class VideoDataset(Dataset):
         if from_files:
             files = list(self.hash.keys())
             permutation = np.random.permutation(len(files))
-            cum_ids = np.cumsum([0] + [int(n * len(files)) for n in balance])
+            cum_ids = np.cumsum([0] + [ceil(n * (len(files)-1)) for n in balance])
             partitions = {}
             partition_files = {}
             for i, n in enumerate(names):
@@ -261,8 +301,7 @@ class VideoDataset(Dataset):
             item = self.partitions[item]
             if isinstance(item[0], str):
                 item = sum([self.hash[i] for i in item], [])
-
-        dataset = type(self)(self.root_directory, transforms=self.transforms, augmentations=self.augmentations)
+        dataset = type(self)(self.root_directory, transforms=self.transforms)
         dataset.metadata = {k: (np.array(v)[item]).tolist() for k, v in self.metadata.items()}
         dataset.files = [self.files[f] for f in item]
         dataset.hash = {}
@@ -270,4 +309,7 @@ class VideoDataset(Dataset):
             dataset.hash[f] = dataset.hash.get(f, []) + [i]
         dataset._sequence_length = self._sequence_length
         dataset._sequence_mode = self._sequence_mode
+        dataset._dtype = self._dtype
         return dataset
+    
+

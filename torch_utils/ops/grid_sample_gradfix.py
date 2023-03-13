@@ -79,5 +79,3 @@ class _GridSample2dBackward(torch.autograd.Function):
 
         assert not ctx.needs_input_grad[2]
         return grad2_grad_output, grad2_input, grad2_grid
-
-#----------------------------------------------------------------------------
