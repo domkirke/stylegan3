@@ -117,15 +117,14 @@ class VideoDataset(Dataset):
                 end = timestamps
                 start_idx = 0
                 end_idx = 0
-        data, _, _ = tv.io.read_video(f"{self.root_directory}/data/{self.files[item]}", start, end, pts_unit="sec", output_format="TCHW")
+        data, _, _ = tv.io.read_video(f"{self.root_directory}/data/{self.files[item]}", start, end, pts_unit="sec")
         if start == end:
             if data.shape[0] != 1:
                 data = data[0][np.newaxis]
         if sequence_mode is not None:
             if data.shape[0] > sequence_length:
                 data = data[:sequence_length]
-            elif data.shape[0] > sequence_length:
-                data = data
+        data = data.permute(0, 3, 1, 2)
         if data.shape[0] == 1:
             data = data[0]
         return data, (float(start_idx), float(end_idx))
