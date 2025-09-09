@@ -19,6 +19,7 @@ from torch_utils.ops import conv2d_resample
 from torch_utils.ops import upfirdn2d
 from torch_utils.ops import bias_act
 from torch_utils.ops import fma
+import torchbend as tb
 
 #----------------------------------------------------------------------------
 
@@ -86,7 +87,7 @@ def modulated_conv2d(
     x = x.reshape(batch_size, -1, *x.shape[2:])
     if noise is not None:
         x = x.add_(noise)
-    return x
+    return tb.mark(x, "modulated_out")
 
 #----------------------------------------------------------------------------
 
@@ -263,7 +264,7 @@ class MappingNetwork(torch.nn.Module):
                     x = self.w_avg.lerp(x, truncation_psi)
                 else:
                     x[:, :truncation_cutoff] = self.w_avg.lerp(x[:, :truncation_cutoff], truncation_psi)
-        return x
+        return tb.mark(x, "mapping")
 
     def extra_repr(self):
         return f'z_dim={self.z_dim:d}, c_dim={self.c_dim:d}, w_dim={self.w_dim:d}, num_ws={self.num_ws:d}'
@@ -513,6 +514,7 @@ class SynthesisNetwork(torch.nn.Module):
         for res, cur_ws in zip(self.block_resolutions, block_ws):
             block = getattr(self, f'b{res}')
             x, img = block(x, img, cur_ws, **block_kwargs)
+        img = tb.mark(img, "layer_out")
         return img
 
     def extra_repr(self):

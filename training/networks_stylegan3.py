@@ -18,6 +18,7 @@ from torch_utils import persistence
 from torch_utils.ops import conv2d_gradfix
 from torch_utils.ops import filtered_lrelu
 from torch_utils.ops import bias_act
+import torchbend as tb
 
 #----------------------------------------------------------------------------
 
@@ -339,7 +340,7 @@ class SynthesisLayer(torch.nn.Module):
         input_gain = self.magnitude_ema.rsqrt()
 
         # Execute affine layer.
-        styles = self.affine(w)
+        styles = tb.mark(self.affine(w), "styles")
         if self.is_torgb:
             weight_gain = 1 / np.sqrt(self.in_channels * (self.conv_kernel ** 2))
             styles = styles * weight_gain
@@ -466,9 +467,12 @@ class SynthesisNetwork(torch.nn.Module):
         ws = ws.to(torch.float32).unbind(dim=1)
 
         # Execute layers.
-        x = self.input(ws[0])
+        w_0 = tb.mark(ws[0], "mapping")
+        x = tb.mark(self.input(w_0), "layer_out")
+
         for name, w in zip(self.layer_names, ws[1:]):
-            x = getattr(self, name)(x, w, **layer_kwargs)
+            w = tb.mark(w, "mapping")
+            x = tb.mark(getattr(self, name)(x, w, **layer_kwargs), "layer_out")
         if self.output_scale != 1:
             x = x * self.output_scale
 

@@ -52,8 +52,21 @@ def _parse_padding(padding):
     return px0, px1, py0, py1
 
 #----------------------------------------------------------------------------
+from typing import Optional, Sequence, Union
 
-def filtered_lrelu(x, fu=None, fd=None, b=None, up=1, down=1, padding=0, gain=np.sqrt(2), slope=0.2, clamp=None, flip_filter=False, impl='cuda'):
+@torch.library.custom_op("sg3::filtered_lrelu", mutates_args=())
+def filtered_lrelu(x: torch.Tensor, 
+                   fu: Optional[torch.Tensor]=None, 
+                   fd: Optional[torch.Tensor]=None, 
+                   b: Optional[torch.Tensor]=None, 
+                   up: int = 1, 
+                   down: int = 1, 
+                   padding: Optional[Sequence[int]] = None, 
+                   gain: float = np.sqrt(2), 
+                   slope: float = 0.2, 
+                   clamp: Optional[int]=None, 
+                   flip_filter: bool=False, 
+                   impl: str='cuda') -> torch.Tensor:
     r"""Filtered leaky ReLU for a batch of 2D images.
 
     Performs the following sequence of operations for each channel:
@@ -110,10 +123,29 @@ def filtered_lrelu(x, fu=None, fd=None, b=None, up=1, down=1, padding=0, gain=np
         Tensor of the shape `[batch_size, num_channels, out_height, out_width]`.
     """
     assert isinstance(x, torch.Tensor)
+    assert padding is not None, "padding must not be None"
+    if isinstance(padding, int):
+        padding = [padding] * 4
     assert impl in ['ref', 'cuda']
     if impl == 'cuda' and x.device.type == 'cuda' and _init():
         return _filtered_lrelu_cuda(up=up, down=down, padding=padding, gain=gain, slope=slope, clamp=clamp, flip_filter=flip_filter).apply(x, fu, fd, b, None, 0, 0)
     return _filtered_lrelu_ref(x, fu=fu, fd=fd, b=b, up=up, down=down, padding=padding, gain=gain, slope=slope, clamp=clamp, flip_filter=flip_filter)
+
+@torch.library.register_fake("sg3::filtered_lrelu")
+def _(x: torch.Tensor, 
+                   fu: Optional[torch.Tensor]=None, 
+                   fd: Optional[torch.Tensor]=None, 
+                   b: Optional[torch.Tensor]=None, 
+                   up: int = 1, down: int = 1, padding: Optional[Sequence[int]] = None, gain: float = np.sqrt(2), slope: float = 0.2, clamp: Optional[Sequence[int]]=None, flip_filter: bool=False, impl: str='cuda'):
+    assert padding is not None
+    px0, px1, py0, py1 = _parse_padding(padding)
+    batch_size, channels, in_h, in_w = x.shape
+    fu_w, fu_h = _get_filter_size(fu)
+    fd_w, fd_h = _get_filter_size(fd)
+    out_w = (in_w * up + (px0 + px1) - (fu_w - 1) - (fd_w - 1) + (down - 1)) // down
+    out_h = (in_h * up + (py0 + py1) - (fu_h - 1) - (fd_h - 1) + (down - 1)) // down
+    return x.new_empty((batch_size, channels, out_w, out_h))
+
 
 #----------------------------------------------------------------------------
 

@@ -11,6 +11,7 @@
 import os
 import numpy as np
 import torch
+import math
 
 from .. import custom_ops
 from .. import misc
@@ -115,7 +116,10 @@ def setup_filter(f, device=torch.device('cpu'), normalize=True, flip_filter=Fals
 
 #----------------------------------------------------------------------------
 
-def upfirdn2d(x, f, up=1, down=1, padding=0, flip_filter=False, gain=1, impl='cuda'):
+from typing import Union, Sequence, Optional
+
+@torch.library.custom_op("sg3::upfirdn2d", mutates_args=())
+def upfirdn2d(x: torch.Tensor, f: torch.Tensor, up: int = 1, down: int=1, padding: Optional[Sequence[int]] = None, flip_filter: bool = False, gain: float = 1, impl: str = 'cuda') -> torch.Tensor:
     r"""Pad, upsample, filter, and downsample a batch of 2D images.
 
     Performs the following sequence of operations for each channel:
@@ -157,9 +161,45 @@ def upfirdn2d(x, f, up=1, down=1, padding=0, flip_filter=False, gain=1, impl='cu
     """
     assert isinstance(x, torch.Tensor)
     assert impl in ['ref', 'cuda']
+    if padding is None: padding = 0
     if impl == 'cuda' and x.device.type == 'cuda' and _init():
         return _upfirdn2d_cuda(up=up, down=down, padding=padding, flip_filter=flip_filter, gain=gain).apply(x, f)
     return _upfirdn2d_ref(x, f, up=up, down=down, padding=padding, flip_filter=flip_filter, gain=gain)
+
+@upfirdn2d.register_fake
+def _(x: torch.Tensor, f: torch.Tensor, up: Sequence[int] = 1, down: Union[int, Sequence[int]]=1, padding: Optional[Sequence[int]]=None, flip_filter: bool = False, gain: float = 1, impl: str = 'cuda'):
+    if padding is None: padding = 0
+    padding = _parse_padding(padding)
+    batch_size, num_channels, in_height, in_width = x.shape
+    upx, upy = _parse_scaling(up)
+    downx, downy = _parse_scaling(down)
+    padx0, padx1, pady0, pady1 = _parse_padding(padding)
+    x = x.reshape([batch_size, num_channels, in_height, 1, in_width, 1])
+    x = torch.nn.functional.pad(x, [0, upx - 1, 0, 0, 0, upy - 1])
+    x = x.reshape([batch_size, num_channels, in_height * upy, in_width * upx])
+
+    # Pad or crop.
+    x = torch.nn.functional.pad(x, [max(padx0, 0), max(padx1, 0), max(pady0, 0), max(pady1, 0)])
+    x = x[:, :, max(-pady0, 0) : x.shape[2] - max(-pady1, 0), max(-padx0, 0) : x.shape[3] - max(-padx1, 0)]
+
+    # Setup filter.
+    f = f * (gain ** (f.ndim / 2))
+    f = f.to(x.dtype)
+    if not flip_filter:
+        f = f.flip(list(range(f.ndim)))
+
+    # Convolve with the filter.
+    f = f[np.newaxis, np.newaxis].repeat([num_channels, 1] + [1] * f.ndim)
+    if f.ndim == 4:
+        x = conv2d_gradfix.conv2d(input=x, weight=f, groups=num_channels)
+    else:
+        x = conv2d_gradfix.conv2d(input=x, weight=f.unsqueeze(2), groups=num_channels)
+        x = conv2d_gradfix.conv2d(input=x, weight=f.unsqueeze(3), groups=num_channels)
+
+    # Downsample by throwing away pixels.
+    x = x[:, :, ::downy, ::downx]
+    return x
+
 
 #----------------------------------------------------------------------------
 
@@ -345,7 +385,7 @@ def upsample2d(x, f, up=2, padding=0, flip_filter=False, gain=1, impl='cuda'):
         pady0 + (fh + upy - 1) // 2,
         pady1 + (fh - upy) // 2,
     ]
-    return upfirdn2d(x, f, up=up, padding=p, flip_filter=flip_filter, gain=gain*upx*upy, impl=impl)
+    return upfirdn2d(x, f, up=up, padding=p, flip_filter=flip_filter, gain=gain*upx*upy, impl=impl).clone()
 
 #----------------------------------------------------------------------------
 
@@ -387,3 +427,4 @@ def downsample2d(x, f, down=2, padding=0, flip_filter=False, gain=1, impl='cuda'
     return upfirdn2d(x, f, down=down, padding=p, flip_filter=flip_filter, gain=gain, impl=impl)
 
 #----------------------------------------------------------------------------
+

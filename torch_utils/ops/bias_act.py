@@ -47,9 +47,10 @@ def _init():
         )
     return True
 
+from typing import Optional, Sequence
 #----------------------------------------------------------------------------
-
-def bias_act(x, b=None, dim=1, act='linear', alpha=None, gain=None, clamp=None, impl='cuda'):
+@torch.library.custom_op("sg3::bias_act", mutates_args=())
+def bias_act(x: torch.Tensor, b: Optional[torch.Tensor] = None, dim: int = 1, act: str ='linear', alpha: Optional[float] = None, gain: Optional[float]=None, clamp: int = None, impl: str = 'cuda') -> torch.Tensor:
     r"""Fused bias and activation function.
 
     Adds bias `b` to activation tensor `x`, evaluates activation function `act`,
@@ -84,6 +85,13 @@ def bias_act(x, b=None, dim=1, act='linear', alpha=None, gain=None, clamp=None, 
     if impl == 'cuda' and x.device.type == 'cuda' and _init():
         return _bias_act_cuda(dim=dim, act=act, alpha=alpha, gain=gain, clamp=clamp).apply(x, b)
     return _bias_act_ref(x=x, b=b, dim=dim, act=act, alpha=alpha, gain=gain, clamp=clamp)
+
+@bias_act.register_fake
+def _(x: torch.Tensor, b: Optional[torch.Tensor] = None, dim: int = 1, act: str ='linear', alpha: Optional[float] = None, gain: Optional[float]=None, clamp: Optional[int]=None, impl: str = 'cuda'):
+    if b is not None:
+        assert x.device == b.device
+        assert x.dtype == b.dtype
+    return torch.empty_like(x)
 
 #----------------------------------------------------------------------------
 
