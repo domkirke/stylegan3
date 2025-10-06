@@ -133,7 +133,7 @@ class MappingNetwork(torch.nn.Module):
             setattr(self, f'fc{idx}', layer)
         self.register_buffer('w_avg', torch.zeros([w_dim]))
 
-    def forward(self, z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False):
+    def forward(self, z, c, truncation_psi=1., truncation_cutoff=None, update_emas=False):
         misc.assert_shape(z, [None, self.z_dim])
         if truncation_cutoff is None:
             truncation_cutoff = self.num_ws
@@ -511,7 +511,7 @@ class Generator(torch.nn.Module):
         self.num_ws = self.synthesis.num_ws
         self.mapping = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, **mapping_kwargs)
 
-    def forward(self, z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False, **synthesis_kwargs):
+    def forward(self, z, c, truncation_psi: float | None = 1, truncation_cutoff: int | None = None, update_emas: bool = False, **synthesis_kwargs):
         ws = self.mapping(z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
         img = self.synthesis(ws, update_emas=update_emas, **synthesis_kwargs)
         return img
